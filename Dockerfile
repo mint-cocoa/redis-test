@@ -1,20 +1,23 @@
-# Use the official Node.js 18 image
-FROM node:18
+# Use the official Python image
+FROM python:3.11-slim
 
-# Create and set the working directory
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Set work directory
 WORKDIR /usr/src/app
 
-# Copy package.json and package-lock.json
-COPY package*.json ./
-
 # Install dependencies
-RUN npm install
+COPY requirements.txt .
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
 
-# Copy the rest of the application code
+# Copy project
 COPY . .
 
 # Expose the application port
-EXPOSE 3000
+EXPOSE 8000
 
-# Start the application
-CMD ["npm", "start"]
+# Start the application using Uvicorn
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
