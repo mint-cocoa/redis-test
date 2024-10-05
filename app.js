@@ -1,19 +1,18 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const queueRoutes = require('./routes/queue');
+import React from 'react';
+import ReactDOM from 'react-dom';
+import QueueStatus from './routes/queue';
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const App = () => {
+    const rideIds = ['ride1', 'ride2', 'ride3']; // 모니터링할 놀이기구 ID 목록
 
-app.use(bodyParser.json());
+    return (
+        <div>
+            <h1>놀이기구 줄서기 모니터링 대시보드</h1>
+            {rideIds.map(rideId => (
+                <QueueStatus key={rideId} rideId={rideId} />
+            ))}
+        </div>
+    );
+};
 
-app.use('/queue', queueRoutes);
-
-// 기본 라우트
-app.get('/', (req, res) => {
-  res.send('놀이기구 줄서기 서비스에 오신 것을 환영합니다!');
-});
-
-app.listen(PORT, () => {
-  console.log(`서버가 포트 ${PORT}에서 실행 중입니다.`);
-});
+ReactDOM.render(<App />, document.getElementById('root'));
