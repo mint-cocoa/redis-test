@@ -1,50 +1,95 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket
+from fastapi.websockets import WebSocketDisconnect
+from redis import Redis
+import json
+import asyncio
 from pydantic import BaseModel
-import redis_client
-
+from redis_client import client
 router = APIRouter()
 
-class EnqueueRequest(BaseModel):
+RIDES = ["roller-coaster", "ferris-wheel", "bumper-cars", "carousel", "log-flume"]
+class QueueRequest(BaseModel):
     rideId: str
     userId: str
 
-class DequeueRequest(BaseModel):
-    rideId: str
-
 @router.post("/enqueue")
-def enqueue(request: EnqueueRequest):
-    if not request.rideId or not request.userId:
-        raise HTTPException(status_code=400, detail="rideId와 userId가 필요합니다.")
-    
+def enqueue(request: QueueRequest):
     try:
-        redis_client.client.rpush(f"queue:{request.rideId}", request.userId)
-        queue = redis_client.client.lrange(f"queue:{request.rideId}", 0, -1)
-        position = queue.index(request.userId) + 1
-        return {"message": "줄에 추가되었습니다.", "position": position}
+        client.rpush(f"queue:{request.rideId}", request.userId)
+        publish_queue_update(request.rideId)
+        return {"message": "대기열에 추가되었습니다."}
     except Exception as e:
-        print(f'enqueue 에러: {e}')
+        print(f'대기열 추가 에러: {e}')
         raise HTTPException(status_code=500, detail="서버 에러")
 
-@router.post("/dequeue")
-def dequeue(request: DequeueRequest):
-    if not request.rideId:
-        raise HTTPException(status_code=400, detail="rideId가 필요합니다.")
-    
+@router.post("/dequeue/{rideId}")
+def dequeue(rideId: str):
     try:
-        user_id = redis_client.client.lpop(f"queue:{request.rideId}")
-        if user_id:
-            return {"message": "줄에서 제거되었습니다.", "userId": user_id}
+        userId = client.lpop(f"queue:{rideId}")
+        if userId:
+            publish_queue_update(rideId)
+            return {"userId": userId}
         else:
-            return {"message": "줄에 사람이 없습니다."}
+            raise HTTPException(status_code=404, detail="대기열이 비어있습니다.")
     except Exception as e:
-        print(f'dequeue 에러: {e}')
+        print(f'대기열 제거 에러: {e}')
         raise HTTPException(status_code=500, detail="서버 에러")
 
-@router.get("/status/{rideId}")
-def status(rideId: str):
+@router.get("/position/{rideId}/{userId}")
+def get_position(rideId: str, userId: str):
     try:
-        queue = redis_client.client.lrange(f"queue:{rideId}", 0, -1)
-        return {"rideId": rideId, "queue": queue}
+        queue = client.lrange(f"queue:{rideId}", 0, -1)
+        if userId in queue:
+            position = queue.index(userId) + 1
+            return {"rideId": rideId, "userId": userId, "position": position}
+        else:
+            raise HTTPException(status_code=404, detail="사용자가 대기열에 없습니다.")
     except Exception as e:
-        print(f'status 조회 에러: {e}')
+        print(f'위치 조회 에러: {e}')
         raise HTTPException(status_code=500, detail="서버 에러")
+
+@router.get("/all-queues")
+def get_all_queues():
+    try:
+        all_queues = {}
+        for key in client.keys("queue:*"):
+            ride_id = key.split(":")[1]
+            queue_length = client.llen(key)
+            all_queues[ride_id] = queue_length
+        return {"queues": all_queues}
+    except Exception as e:
+        print(f'모든 대기열 조회 에러: {e}')
+        raise HTTPException(status_code=500, detail="서버 에러")
+
+@router.websocket("/ws/queue_status")
+async def websocket_queue_status(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        pubsub = client.pubsub()
+        await pubsub.subscribe('queue_updates')
+
+        initial_status = get_all_queue_status()
+        await websocket.send_text(json.dumps(initial_status))
+
+        while True:
+            message = await pubsub.get_message(ignore_subscribe_messages=True)
+            if message:
+                await websocket.send_text(message['data'])
+            await asyncio.sleep(0.1)
+    except WebSocketDisconnect:
+        await pubsub.unsubscribe('queue_updates')
+    finally:
+        await pubsub.close()
+
+def get_all_queue_status():
+    all_queues = {}
+    for key in client.keys("queue:*"):
+        ride_id = key.split(":")[1]
+        queue = client.lrange(key, 0, -1)
+        all_queues[ride_id] = len(queue)
+    return all_queues
+
+def publish_queue_update(rideId: str):
+    queue_length = client.llen(f"queue:{rideId}")
+    update = json.dumps({rideId: queue_length})
+    client.publish('queue_updates', update)
